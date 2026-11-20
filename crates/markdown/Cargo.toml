@@ -12,5 +12,5 @@ workspace = true
 
 [dependencies]
 craft-flow = { workspace = true }
-craft-html = { workspace = true }
+craft-html = { workspace = true, features = ["flow"] }
 craft-wordmodel = { workspace = true }

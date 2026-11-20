@@ -273,6 +273,16 @@ fn tag_attr(tag: &str, name: &str) -> Option<String> {
     None
 }
 
+/// The bytes of the picture `src` names: a `data:` URI (the scheme in any case), else the
+/// loader's, kept only if it can be measured, so a truncated file stays its alt text.
+fn load_picture(src: &str, images: Images<'_>) -> Option<Arc<Vec<u8>>> {
+    let trimmed = src.trim_start();
+    match trimmed.get(..5).filter(|p| p.eq_ignore_ascii_case("data:")) {
+        Some(_) => trimmed.get(5..).and_then(|rest| model::data_uri(&format!("data:{rest}"))).map(Arc::new),
+        None => images.and_then(|load| load(src)).filter(|d| model::image_px(d).is_some()),
+    }
+}
+
 fn tokenize(s: &str, base: &Fmt, depth: usize, refs: &Refs, images: Images<'_>) -> Vec<Node> {
     let mut nodes: Vec<Node> = Vec::new();
     // Bytes the link/image scans and reference-label lookups may read in total. Unmatched
@@ -352,16 +362,7 @@ fn tokenize(s: &str, base: &Fmt, depth: usize, refs: &Refs, images: Images<'_>) 
                                 _ => None,
                             })
                             .collect();
-                        // A `data:` URI (the scheme in any case) carries its picture; another
-                        // destination is loaded by `images`, when the caller gave one (a path
-                        // beside the Markdown file), and kept only if it can be measured, so a
-                        // truncated file stays its alt text.
-                        let trimmed = dest.trim_start();
-                        let data = match trimmed.get(..5).filter(|p| p.eq_ignore_ascii_case("data:")) {
-                            Some(_) => trimmed.get(5..).and_then(|rest| model::data_uri(&format!("data:{rest}"))).map(Arc::new),
-                            None => images.and_then(|load| load(&dest)).filter(|d| model::image_px(d).is_some()),
-                        };
-                        match data.and_then(|d| make_img(d, None, None, &alt)) {
+                        match load_picture(&dest, images).and_then(|d| make_img(d, None, None, &alt)) {
                             Some(im) => nodes.push(Node::Inl(Inline::Image(im))),
                             None => push_text(&mut nodes, &alt, base),
                         }
@@ -386,7 +387,7 @@ fn tokenize(s: &str, base: &Fmt, depth: usize, refs: &Refs, images: Images<'_>) 
                 }
             }
             b'<' => {
-                if let Some((end, parsed)) = angle_inlines(s, i, base) {
+                if let Some((end, parsed)) = angle_inlines(s, i, base, images) {
                     flush!();
                     nodes.extend(parsed);
                     i = end;
@@ -414,7 +415,7 @@ fn tokenize(s: &str, base: &Fmt, depth: usize, refs: &Refs, images: Images<'_>) 
     nodes
 }
 
-fn angle_inlines(s: &str, start: usize, base: &Fmt) -> Option<(usize, Vec<Node>)> {
+fn angle_inlines(s: &str, start: usize, base: &Fmt, images: Images<'_>) -> Option<(usize, Vec<Node>)> {
     if let Some(pos) = s.get(start..).and_then(|rest| rest.strip_prefix("<!--")).and_then(|rest| rest.find("-->")) {
         return Some((start + 4 + pos + 3, Vec::new()));
     }
@@ -422,6 +423,7 @@ fn angle_inlines(s: &str, start: usize, base: &Fmt) -> Option<(usize, Vec<Node>)
     let tag_end = within(rest, MAX_TAG).find('>')?;
     let inner = rest.get(..tag_end)?;
     let lower = inner.to_ascii_lowercase();
+    let head = lower.trim_end_matches('/').trim();
     let end = start + inner.len() + 2;
     let mut nodes = Vec::new();
     if !inner.is_empty()
@@ -432,8 +434,16 @@ fn angle_inlines(s: &str, start: usize, base: &Fmt) -> Option<(usize, Vec<Node>)
         fmt.link = Some(if inner.contains('@') && !inner.contains(':') { format!("mailto:{inner}").into() } else { inner.into() });
         push_text(&mut nodes, inner, &fmt);
         Some((end, nodes))
-    } else if matches!(lower.trim_end_matches('/').trim(), "br") {
+    } else if head == "br" {
         push_text(&mut nodes, "\n", base);
+        Some((end, nodes))
+    } else if head.strip_prefix("img").is_some_and(|rest| rest.is_empty() || rest.starts_with([' ', '\t', '\n', '\r'])) {
+        let alt = tag_attr(inner, "alt").unwrap_or_default();
+        match tag_attr(inner, "src").and_then(|src| load_picture(&src, images)).and_then(|d| make_img(d, None, None, &alt)) {
+            Some(im) => nodes.push(Node::Inl(Inline::Image(im))),
+            None if !alt.is_empty() => push_text(&mut nodes, &alt, base),
+            None => {}
+        }
         Some((end, nodes))
     } else if lower.starts_with("a ") && rest.get(inner.len() + 1..).is_some_and(|tail| tail.to_ascii_lowercase().starts_with("</a>")) {
         if let Some(name) = tag_attr(inner, "id").or_else(|| tag_attr(inner, "name")) {

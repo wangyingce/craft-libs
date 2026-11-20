@@ -869,3 +869,55 @@ fn image_descriptions_data_schemes_and_truncated_files() {
     assert_eq!(got[2], (Vec::<String>::new(), "cut".to_string()), "a truncated picture stays its alt text");
     assert_eq!(*asked.borrow(), ["gone.png", "cut.png"], "neither the inner image nor the DATA: URI is asked for");
 }
+
+#[test]
+fn html_blocks_render_through_the_html_reader() {
+    let flow = parse("<p align=\"center\">Hello <b>world</b><br>again</p>\n\n<h2>Title</h2>\n\n<table><tr><td><b>A</b></td><td>B</td></tr></table>");
+    assert_eq!(flow.blocks.len(), 3);
+    let FBlock::Para(p) = &flow.blocks[0] else { panic!("first block is not a paragraph") };
+    assert_eq!(p.text(), "Hello world\nagain");
+    assert!(p.inlines.iter().any(|i| matches!(i, Inline::Text(t, f) if t == "world" && f.bold)));
+    let FBlock::Para(h) = &flow.blocks[1] else { panic!("second block is not a paragraph") };
+    assert_eq!(h.kind, Kind::Heading(2));
+    assert_eq!(h.text(), "Title");
+    let FBlock::Table(t) = &flow.blocks[2] else { panic!("third block is not a table") };
+    assert_eq!(t.rows.len(), 1);
+    assert_eq!(t.rows.first().map(Vec::len), Some(2));
+}
+
+#[test]
+fn html_blocks_keep_links_and_image_alt_text() {
+    let flow = parse("<p><a href=\"https://example.com/x\">Go</a> <img src=\"a.png\" alt=\"Logo\"></p>");
+    let FBlock::Para(p) = &flow.blocks[0] else { panic!("not a paragraph") };
+    assert_eq!(p.text(), "Go Logo");
+    assert!(
+        p.inlines.iter().any(|i| matches!(i, Inline::Text(t, f) if t == "Go" && f.link.as_deref() == Some("https://example.com/x"))),
+        "{:?}",
+        p.inlines
+    );
+}
+
+#[test]
+fn inline_html_images_keep_their_alt_text() {
+    let flow = parse("Before <img src=\"x.png\" alt=\"Icon\" width=\"32\"> after");
+    let FBlock::Para(p) = &flow.blocks[0] else { panic!("not a paragraph") };
+    assert_eq!(p.text(), "Before Icon after");
+}
+
+fn picture_loaded(flow: &model::Flow) -> bool {
+    flow.blocks.iter().any(|b| matches!(b, FBlock::Para(p) if p.inlines.iter().any(|i| matches!(i, Inline::Image(_)))))
+}
+
+#[test]
+fn inline_html_images_load_through_the_loader() {
+    let load = |src: &str| -> Option<Arc<Vec<u8>>> { (src == "x.png").then(|| Arc::new(PNG.to_vec())) };
+    let flow = parse_with("Before <img src=\"x.png\" alt=\"Icon\"> after", Some(&load));
+    assert!(picture_loaded(&flow));
+}
+
+#[test]
+fn block_html_images_load_through_the_loader() {
+    let load = |src: &str| -> Option<Arc<Vec<u8>>> { (src == "a.png").then(|| Arc::new(PNG.to_vec())) };
+    let flow = parse_with("<p><img src=\"a.png\" alt=\"Logo\"></p>", Some(&load));
+    assert!(picture_loaded(&flow));
+}

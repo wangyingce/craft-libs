@@ -8,8 +8,10 @@
 //! bottom-border paragraph), bullet and ordered lists (nested by indentation), GFM pipe tables,
 //! and inlines: emphasis/strong (the CommonMark delimiter algorithm), `~~strike~~`, code spans,
 //! inline links, autolinks, images (`data:` URIs become pictures; with [`import_with`] a loader
-//! reads the others, such as a path beside the file; else they are their alt text),
-//! backslash escapes, entities, HTML comments (`<!-- ... -->`), `<br>` and `<a id>` anchors.
+//! reads the others, such as a path beside the file; else they are their alt text), inline
+//! `<img>`, block-level HTML (a line beginning with a block tag such as `<p>` or `<table>` runs
+//! to the next blank line and is read as HTML), backslash escapes, entities, HTML comments
+//! (`<!-- ... -->`), `<br>` and `<a id>` anchors.
 //!
 //! Export writes the same constructs; pictures become `![alt](media-name)` placeholders.
 

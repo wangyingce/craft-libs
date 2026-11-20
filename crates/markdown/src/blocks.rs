@@ -384,6 +384,99 @@ fn delimiter_row(l: &str, keep: usize) -> Option<(Vec<Option<Align>>, usize)> {
     Some((out, count))
 }
 
+/// HTML tags that begin a block-level HTML run (CommonMark's block tag list, plus the standalone
+/// picture, image and line-break tags a README uses between paragraphs).
+const HTML_BLOCK_TAGS: &[&str] = &[
+    "address",
+    "article",
+    "aside",
+    "base",
+    "basefont",
+    "blockquote",
+    "body",
+    "br",
+    "caption",
+    "center",
+    "col",
+    "colgroup",
+    "dd",
+    "details",
+    "dialog",
+    "dir",
+    "div",
+    "dl",
+    "dt",
+    "fieldset",
+    "figcaption",
+    "figure",
+    "footer",
+    "form",
+    "frame",
+    "frameset",
+    "h1",
+    "h2",
+    "h3",
+    "h4",
+    "h5",
+    "h6",
+    "head",
+    "header",
+    "hr",
+    "html",
+    "iframe",
+    "img",
+    "legend",
+    "li",
+    "link",
+    "main",
+    "menu",
+    "menuitem",
+    "nav",
+    "noframes",
+    "ol",
+    "optgroup",
+    "option",
+    "p",
+    "param",
+    "picture",
+    "pre",
+    "script",
+    "search",
+    "section",
+    "source",
+    "style",
+    "summary",
+    "table",
+    "tbody",
+    "td",
+    "textarea",
+    "tfoot",
+    "th",
+    "thead",
+    "title",
+    "tr",
+    "track",
+    "ul",
+];
+
+/// Is this line the start of an HTML block? (Up to three leading spaces, then `<tag` or `</tag`
+/// for a block tag, followed by space, `>`, `/` or the end of the line.)
+fn html_block_start(l: &str) -> bool {
+    if indent(l) >= 4 {
+        return false;
+    }
+    let t = l.trim_start_matches([' ', '\t']);
+    let Some(rest) = t.strip_prefix('<') else { return false };
+    let rest = rest.strip_prefix('/').unwrap_or(rest);
+    let name_len = rest.find(|c: char| !c.is_ascii_alphanumeric()).unwrap_or(rest.len());
+    let Some(name) = rest.get(..name_len).filter(|n| !n.is_empty()) else { return false };
+    let Some(after) = rest.get(name_len..) else { return false };
+    if !(after.is_empty() || after.starts_with([' ', '\t', '>', '/'])) {
+        return false;
+    }
+    HTML_BLOCK_TAGS.iter().any(|tag| name.eq_ignore_ascii_case(tag))
+}
+
 /// Does this line start a block that interrupts a paragraph?
 fn interrupts(l: &str) -> bool {
     if indent(l) >= 4 {
@@ -395,6 +488,7 @@ fn interrupts(l: &str) -> bool {
         || fence(t).is_some()
         || t.starts_with('>')
         || t.starts_with("<!--")
+        || html_block_start(l)
         || list_marker(t).is_some_and(|m| (!m.ordered || m.start == 1) && !is_blank(t.get(m.len..).unwrap_or("")))
 }
 
@@ -512,6 +606,22 @@ fn parse_blocks(lines: &[String], depth: usize, level: u8, cx: Cx<'_>, budget: &
                     break;
                 }
             }
+            continue;
+        }
+        if html_block_start(line) {
+            flush_para(&mut para, &mut out, depth, cx);
+            // An HTML block runs to the next blank line, as CommonMark's type 6 does.
+            let mut html = String::new();
+            while let Some(l) = lines.get(i) {
+                if is_blank(l) {
+                    break;
+                }
+                html.push_str(l);
+                html.push('\n');
+                i += 1;
+            }
+            let images: ImageLoader<'_> = cx.images.unwrap_or(&|_: &str| None);
+            out.extend(craft_html::doc::parse_with(&html, images).blocks);
             continue;
         }
         if t.starts_with('>') {
